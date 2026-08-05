@@ -39,19 +39,6 @@ QLabel#SectionLabel {{
     letter-spacing: 1px;
 }}
 
-QLabel#StatValue {{
-    font-size: 22px;
-    font-weight: 600;
-    color: {TEXT};
-}}
-
-QLabel#StatLabel {{
-    font-size: 11px;
-    color: {TEXT_MUTED};
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}}
-
 QFrame#Card {{
     background-color: {SURFACE};
     border: 1px solid {BORDER};
@@ -162,6 +149,87 @@ QScrollBar::handle:vertical {{
 
 QScrollBar::handle:vertical:hover {{
     background: {ACCENT};
+}}
+
+QTabWidget::pane {{
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+    top: -1px;
+}}
+
+QTabBar::tab {{
+    background-color: {SURFACE};
+    color: {TEXT_MUTED};
+    border: 1px solid {BORDER};
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 8px 18px;
+    margin-right: 2px;
+}}
+
+QTabBar::tab:selected {{
+    background-color: {SURFACE_ALT};
+    color: {TEXT};
+}}
+
+QTabBar::tab:hover {{
+    color: {TEXT};
+}}
+
+QTableWidget {{
+    background-color: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    gridline-color: {BORDER};
+    outline: none;
+}}
+
+QTableWidget::item {{
+    padding: 6px 8px;
+}}
+
+QTableWidget::item:selected {{
+    background-color: {ACCENT};
+    color: white;
+}}
+
+QHeaderView::section {{
+    background-color: {SURFACE_ALT};
+    color: {TEXT_MUTED};
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid {BORDER};
+    font-weight: 600;
+}}
+
+QCheckBox {{
+    spacing: 6px;
+}}
+
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 2px solid {BORDER};
+    background-color: {SURFACE_ALT};
+}}
+
+QCheckBox::indicator:checked {{
+    border: 2px solid {ACCENT};
+    background-color: {ACCENT};
+}}
+
+QDateEdit {{
+    background-color: {SURFACE_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 5px;
+    padding: 6px 10px;
+    min-height: 22px;
+}}
+
+QDateEdit:disabled {{
+    color: {TEXT_MUTED};
 }}
 
 QStatusBar {{

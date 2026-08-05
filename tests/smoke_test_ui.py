@@ -20,7 +20,7 @@ def main() -> int:
     window = MainWindow()
     window.show()
     print("MainWindow constructed and shown without error.")
-    print(f"Tunnels in combo: {[window._tunnel_combo.itemText(i) for i in range(window._tunnel_combo.count())]}")
+    print(f"Plant field: {window._plant_edit.text()!r}, Tunnel field: {window._tunnel_edit.text()!r}")
     print(f"Recent runs listed: {window._recent_list.count()}")
 
     app.processEvents()
