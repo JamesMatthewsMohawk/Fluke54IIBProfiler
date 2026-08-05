@@ -18,6 +18,7 @@ unknown, see fluke54/parser.py), runs can be told apart retroactively.
 """
 from __future__ import annotations
 
+import sys
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,25 @@ from pathlib import Path
 from .models import Measurement, Run
 from .profile_builder import ProfilePoint
 
-DEFAULT_DB_PATH = Path("superba_profiler.db")
+
+def _default_db_path() -> Path:
+    """Anchor the DB next to the app rather than relying on the process's cwd.
+
+    A bare relative path resolves against os.getcwd(), which is fragile for
+    a launched .exe (pinned shortcuts, "run as admin", etc. can change it).
+    Under PyInstaller's onefile mode this matters even more: sys.executable
+    is the real, persistent .exe location, whereas the temp dir the app
+    actually runs from (sys._MEIPASS) is wiped after every exit -- storing
+    the DB there would silently lose all data between runs.
+    """
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+    else:
+        base_dir = Path(__file__).resolve().parent.parent
+    return base_dir / "superba_profiler.db"
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
