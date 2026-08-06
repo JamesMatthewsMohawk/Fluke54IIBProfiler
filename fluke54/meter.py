@@ -69,7 +69,10 @@ class FlukeMeter:
             max_window_s=10.0, quiet_cutoff_s=2.0,
         )
         session = parse_qd(data)
-        return LogSession(index=index, sample_count=session.sample_count, readings=session.readings)
+        return LogSession(
+            index=index, sample_count=session.sample_count,
+            readings=session.readings, run_starts=session.run_starts,
+        )
 
     def read_live(self) -> None:
         """Not supported.

@@ -32,7 +32,19 @@ class Reading:
 
 @dataclass(frozen=True)
 class LogSession:
-    """A full downloaded log (one QD <index> response)."""
+    """A full downloaded log (one QD <index> response).
+
+    readings is a flat list that may hold more than one logged run
+    concatenated together (see fluke54/parser.py's run-boundary marker
+    docs) -- run_starts holds the index into readings where each run
+    begins, e.g. [0] for a single run or [0, 61] for two.
+    """
     index: int
     sample_count: int
     readings: list[Reading] = field(default_factory=list)
+    run_starts: list[int] = field(default_factory=lambda: [0])
+
+    def split_runs(self) -> list[list[Reading]]:
+        """readings, split at each run_starts boundary. Always at least one run."""
+        bounds = self.run_starts + [len(self.readings)]
+        return [self.readings[start:end] for start, end in zip(bounds, bounds[1:])]

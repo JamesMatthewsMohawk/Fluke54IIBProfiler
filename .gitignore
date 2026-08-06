@@ -6,3 +6,4 @@ logs/
 *.lnk
 build/
 dist/
+license_signing_key.pem

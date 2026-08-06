@@ -24,17 +24,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app import database
+from app import database, licensing
 from app.data_export import export_runs_to_csv, export_runs_to_excel
 from app.models import Run
 from app.profile_builder import build_profile
 from app.units import convert_from_celsius
 from fluke54.connection import find_fluke_port
-from fluke54.models import LogSession
+from fluke54.models import LogSession, Reading
 
 from .database_tab import DatabaseTabWidget
 from .download_worker import DownloadWorker
 from .graph_widget import ProfileGraphWidget
+from .run_names_dialog import RunNamesDialog
 
 LOG_INDEX = 1
 SAMPLE_INTERVAL_S = 1.0
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
 
         self._settings = QSettings("SuperbaProfiler", "TunnelProfiler")
         self._display_unit = str(self._settings.value("display_unit", "C"))
+        self._license_key = str(self._settings.value("license_key", ""))
 
         self._active_plots: dict[int, _ActivePlot] = {}
         self._recent_items: dict[int, QListWidgetItem] = {}
@@ -120,6 +122,7 @@ class MainWindow(QMainWindow):
         self._graph.set_temperature_unit(self._display_unit)
         self._reload_recent_runs()
         self._database_tab.refresh()
+        self._refresh_license_gate()
 
     # ---------------------------------------------------------------- UI
 
@@ -253,6 +256,11 @@ class MainWindow(QMainWindow):
         self._download_button.clicked.connect(self._on_download_clicked)
         content_layout.addWidget(self._download_button)
 
+        self._license_gate_label = QLabel("Meter downloads require a license -- activate one in Settings.")
+        self._license_gate_label.setObjectName("HintLabel")
+        self._license_gate_label.setWordWrap(True)
+        content_layout.addWidget(self._license_gate_label)
+
         content_layout.addStretch(1)
         layout.addWidget(content)
         layout.addStretch(1)
@@ -272,6 +280,23 @@ class MainWindow(QMainWindow):
         display_unit_row, self._display_unit_group = _unit_radio_row(self, self._display_unit)
         self._display_unit_group.buttonClicked.connect(self._on_display_unit_changed)
         content_layout.addWidget(_card(display_unit_row, title="Display Unit"))
+
+        self._license_status_label = QLabel()
+        machine_id_label = QLabel(f"Machine ID: {licensing.get_machine_id()}")
+        machine_id_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        machine_id_label.setWordWrap(True)
+
+        self._license_key_edit = QLineEdit(self._license_key)
+        self._license_key_edit.setPlaceholderText("KOTPRO-...")
+
+        activate_button = QPushButton("Activate")
+        activate_button.setObjectName("SecondaryButton")
+        activate_button.clicked.connect(self._on_activate_license_clicked)
+
+        content_layout.addWidget(_card(
+            self._license_status_label, machine_id_label, self._license_key_edit, activate_button,
+            title="License",
+        ))
 
         content_layout.addStretch(1)
         layout.addWidget(content)
@@ -306,7 +331,31 @@ class MainWindow(QMainWindow):
         checked = self._source_unit_group.checkedButton()
         return str(checked.property("unit_value")) if checked else "C"
 
+    def _refresh_license_gate(self) -> None:
+        licensed = licensing.is_licensed(self._license_key)
+        self._license_status_label.setText("Licensed" if licensed else "Not Activated")
+        self._download_button.setEnabled(licensed)
+        self._license_gate_label.setVisible(not licensed)
+
+    def _on_activate_license_clicked(self) -> None:
+        key = self._license_key_edit.text().strip()
+        if not licensing.is_licensed(key):
+            QMessageBox.warning(
+                self, "Invalid License",
+                "That key isn't valid for this machine. Double check it was issued for this "
+                "machine's ID (shown above), with no missing characters.",
+            )
+            return
+
+        self._license_key = key
+        self._settings.setValue("license_key", key)
+        self._refresh_license_gate()
+        QMessageBox.information(self, "License Activated", "Meter downloads are now enabled.")
+
     def _on_download_clicked(self) -> None:
+        if not licensing.is_licensed(self._license_key):
+            QMessageBox.warning(self, "Not Licensed", "Activate a valid license in the Settings tab first.")
+            return
         if not self._tunnel_edit.text().strip():
             QMessageBox.warning(self, "Tunnel Required", "Enter a tunnel name/number before downloading.")
             return
@@ -315,10 +364,10 @@ class MainWindow(QMainWindow):
         self._meter_status_label.setText("Downloading... (ensure meter shows 'Ir SEnd')")
         self.statusBar().showMessage("Downloading from meter...")
 
-        self._worker = DownloadWorker(log_index=LOG_INDEX)
+        self._worker = DownloadWorker(license_key=self._license_key, log_index=LOG_INDEX)
         self._worker.succeeded.connect(self._on_download_succeeded)
         self._worker.failed.connect(self._on_download_failed)
-        self._worker.finished.connect(lambda: self._download_button.setEnabled(True))
+        self._worker.finished.connect(lambda: self._download_button.setEnabled(licensing.is_licensed(self._license_key)))
         self._worker.start()
 
     def _on_download_succeeded(self, session: LogSession) -> None:
@@ -330,26 +379,49 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Data", "The meter returned zero readings.")
             return
 
-        points = build_profile(session.readings, sample_interval_s=SAMPLE_INTERVAL_S)
-
+        runs_readings = session.split_runs()
         plant = self._plant_edit.text().strip()
-        tunnel = self._tunnel_edit.text().strip()
         source_unit = self._selected_source_unit()
-        run = database.create_run(
-            self._conn, plant=plant, tunnel=tunnel, points=points, source_unit=source_unit,
-        )
-        self._settings.setValue("last_plant", plant)
-        self._settings.setValue("last_tunnel", tunnel)
+
+        if len(runs_readings) > 1:
+            tunnel_names = self._prompt_for_run_names(runs_readings)
+            if tunnel_names is None:
+                self.statusBar().showMessage("Download not saved -- runs weren't named", 5000)
+                return
+        else:
+            tunnel_names = [self._tunnel_edit.text().strip()]
 
         self._graph.clear_profiles()
         self._active_plots.clear()
-        elapsed_time_s = [p.elapsed_time_s for p in points]
-        temperature_c = [p.temperature_c for p in points]
-        self._plot_run(run, elapsed_time_s, temperature_c)
+
+        for readings, tunnel in zip(runs_readings, tunnel_names):
+            points = build_profile(readings, sample_interval_s=SAMPLE_INTERVAL_S)
+            run = database.create_run(
+                self._conn, plant=plant, tunnel=tunnel, points=points, source_unit=source_unit,
+            )
+            elapsed_time_s = [p.elapsed_time_s for p in points]
+            temperature_c = [p.temperature_c for p in points]
+            self._plot_run(run, elapsed_time_s, temperature_c)
+
+        self._settings.setValue("last_plant", plant)
+        self._settings.setValue("last_tunnel", tunnel_names[0])
 
         self._reload_recent_runs()
         self._database_tab.refresh()
         self._tabs.setCurrentIndex(self._chart_tab_index)
+
+    def _prompt_for_run_names(self, runs_readings: list[list[Reading]]) -> list[str] | None:
+        """Ask for a tunnel name per detected run. None means the user cancelled."""
+        unit = self._display_unit
+        summaries = []
+        for readings in runs_readings:
+            temps = [convert_from_celsius(r.temperature_c, unit) for r in readings]
+            summaries.append((len(readings), min(temps), max(temps)))
+
+        dialog = RunNamesDialog(summaries, self._tunnel_edit.text().strip(), unit, parent=self)
+        if dialog.exec() != RunNamesDialog.DialogCode.Accepted:
+            return None
+        return dialog.tunnel_names()
 
     def _on_download_failed(self, message: str) -> None:
         self._meter_status_label.setText("Error")

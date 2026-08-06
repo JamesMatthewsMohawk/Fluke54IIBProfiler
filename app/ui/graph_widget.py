@@ -11,6 +11,7 @@ CURVE_COLORS = ["#3f8cff", "#e0524d", "#3fbf6f", "#f2b705", "#a86ff0", "#00c2c2"
 DEFAULT_X_RANGE_S = (0.0, 60.0)
 Y_RANGE_BY_UNIT = {"C": (0.0, 195.0), "F": (0.0, 390.0)}
 DRAG_HIT_PIXELS = 10.0
+_TIME_LEGEND_IDLE = "Time: --"
 
 pg.setConfigOption("background", "#22262b")
 pg.setConfigOption("foreground", "#e4e7eb")
@@ -28,6 +29,13 @@ class ProfileGraphWidget(QWidget):
     overlaid runs often don't line up. Click-and-drag directly on a
     curve to nudge it left/right in time (temperature is left alone);
     double-click a curve to reset its offset back to zero.
+
+    Hovering shows a dot on each curve at the current time (interpolated
+    between that curve's own samples, so it sits exactly on the drawn
+    line even between points) and appends each curve's live value to its
+    legend entry, alongside a "Time: ..." row -- rather than one
+    generic crosshair reading tied to the raw mouse position, which
+    doesn't mean anything specific when multiple runs are overlaid.
     """
 
     def __init__(self, parent: QWidget | None = None):
@@ -83,22 +91,20 @@ class ProfileGraphWidget(QWidget):
         self._plot_widget.addItem(self._offset_label, ignoreBounds=True)
 
         self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#8c94a0", width=1))
-        self._h_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#8c94a0", width=1))
         self._v_line.setVisible(False)
-        self._h_line.setVisible(False)
         self._plot_widget.addItem(self._v_line, ignoreBounds=True)
-        self._plot_widget.addItem(self._h_line, ignoreBounds=True)
 
-        self._crosshair_label = pg.TextItem(color="#e4e7eb", anchor=(0, 1))
-        self._crosshair_label.setVisible(False)
-        self._plot_widget.addItem(self._crosshair_label)
+        self._value_dots: dict[int, pg.ScatterPlotItem] = {}
+
+        # A name-only, dataless curve purely so the legend can carry a live
+        # "Time: ..." row alongside each curve's live temperature -- see
+        # _on_mouse_moved.
+        self._time_legend_item = self._plot_widget.plot([], [], pen=pg.mkPen(None), name=_TIME_LEGEND_IDLE)
 
         self._proxy = pg.SignalProxy(
             self._plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self._on_mouse_moved
         )
 
-        # Hide the OS cursor while it's over the plot -- the crosshair lines
-        # already track the pointer, so the arrow cursor is just visual noise.
         self._plot_widget.viewport().installEventFilter(self)
 
     def set_temperature_unit(self, unit: str) -> None:
@@ -136,21 +142,29 @@ class ProfileGraphWidget(QWidget):
     def clear_profiles(self) -> None:
         for curve in self._curves.values():
             self._plot_widget.removeItem(curve)
+        for dot in self._value_dots.values():
+            self._plot_widget.removeItem(dot)
         self._curves.clear()
+        self._value_dots.clear()
         self._colors.clear()
         self._base_x.clear()
         self._base_y.clear()
         self._offsets.clear()
         self._next_color_index = 0
-        if self._plot_widget.plotItem.legend is not None:
-            self._plot_widget.plotItem.legend.clear()
+        legend = self._plot_widget.plotItem.legend
+        if legend is not None:
+            legend.clear()  # also drops the Time row -- re-add it below
+            legend.addItem(self._time_legend_item, _TIME_LEGEND_IDLE)
 
     def plot_profile(self, run_id: int, elapsed_time_s: list[float], temperature: list[float], label: str) -> None:
         if run_id in self._curves:
-            self._plot_widget.removeItem(self._curves[run_id])
+            old_curve = self._curves[run_id]
+            self._plot_widget.removeItem(old_curve)
             legend = self._plot_widget.plotItem.legend
             if legend is not None:
-                legend.removeItem(self._curves[run_id].name())
+                # Matched by item identity, not name text: a legend label
+                # left mid-hover holds "name — value", not the plain name.
+                legend.removeItem(old_curve)
 
         color = self._colors.get(run_id)
         if color is None:
@@ -167,15 +181,24 @@ class ProfileGraphWidget(QWidget):
         )
         self._curves[run_id] = curve
 
+        if run_id not in self._value_dots:
+            dot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(color), pen=pg.mkPen("#e4e7eb", width=1))
+            self._plot_widget.addItem(dot, ignoreBounds=True)
+            self._value_dots[run_id] = dot
+
     def remove_profile(self, run_id: int) -> None:
         curve = self._curves.pop(run_id, None)
         if curve is not None:
             self._plot_widget.removeItem(curve)
             legend = self._plot_widget.plotItem.legend
             if legend is not None:
-                legend.removeItem(curve.name())
+                legend.removeItem(curve)
         self._base_x.pop(run_id, None)
         self._base_y.pop(run_id, None)
+
+        dot = self._value_dots.pop(run_id, None)
+        if dot is not None:
+            self._plot_widget.removeItem(dot)
 
     def get_offset(self, run_id: int) -> float:
         """Seconds this run's curve has been dragged from its logged start time."""
@@ -196,13 +219,8 @@ class ProfileGraphWidget(QWidget):
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self._plot_widget.viewport():
-            if event.type() == QEvent.Type.Enter:
-                obj.setCursor(Qt.CursorShape.BlankCursor)
-            elif event.type() == QEvent.Type.Leave:
-                obj.unsetCursor()
-                self._v_line.setVisible(False)
-                self._h_line.setVisible(False)
-                self._crosshair_label.setVisible(False)
+            if event.type() == QEvent.Type.Leave:
+                self._hide_crosshair()
             elif event.type() == QEvent.Type.MouseButtonPress:
                 if self._try_start_drag(event):
                     return True
@@ -268,7 +286,7 @@ class ProfileGraphWidget(QWidget):
     def _end_drag(self) -> None:
         self._drag_run_id = None
         self._offset_label.setVisible(False)
-        self._plot_widget.viewport().setCursor(Qt.CursorShape.BlankCursor)
+        self._plot_widget.viewport().unsetCursor()
 
     def _try_reset_offset(self, event) -> bool:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -300,20 +318,43 @@ class ProfileGraphWidget(QWidget):
     def _on_mouse_moved(self, event) -> None:
         pos = event[0]
         if not self._plot_widget.sceneBoundingRect().contains(pos):
-            self._v_line.setVisible(False)
-            self._h_line.setVisible(False)
-            self._crosshair_label.setVisible(False)
+            self._hide_crosshair()
             return
 
         view_box = self._plot_widget.plotItem.vb
-        mouse_point = view_box.mapSceneToView(pos)
-        x, y = mouse_point.x(), mouse_point.y()
+        x = view_box.mapSceneToView(pos).x()
 
         self._v_line.setPos(x)
-        self._h_line.setPos(y)
         self._v_line.setVisible(True)
-        self._h_line.setVisible(True)
+        self._set_legend_text(self._time_legend_item, f"Time: {x:.1f} s")
 
-        self._crosshair_label.setText(f"{x:.1f} s, {y:.2f}°{self._temp_unit}")
-        self._crosshair_label.setPos(x, y)
-        self._crosshair_label.setVisible(True)
+        for run_id, curve in self._curves.items():
+            dot = self._value_dots.get(run_id)
+            if dot is None:
+                continue
+            x_data, y_data = curve.getData()
+            if len(x_data) == 0 or x < x_data[0] or x > x_data[-1]:
+                dot.setData([], [])
+                self._set_legend_text(curve, curve.name())
+                continue
+            y_val = float(np.interp(x, x_data, y_data))
+            dot.setData([x], [y_val])
+            self._set_legend_text(curve, f"{curve.name()} — {y_val:.1f}°{self._temp_unit}")
+
+    def _hide_crosshair(self) -> None:
+        self._v_line.setVisible(False)
+        self._set_legend_text(self._time_legend_item, _TIME_LEGEND_IDLE)
+        for run_id, dot in self._value_dots.items():
+            dot.setData([], [])
+            curve = self._curves.get(run_id)
+            if curve is not None:
+                self._set_legend_text(curve, curve.name())
+
+    def _set_legend_text(self, item: pg.PlotDataItem, text: str) -> None:
+        legend = self._plot_widget.plotItem.legend
+        if legend is None:
+            return
+        for sample, label in legend.items:
+            if sample.item is item:
+                label.setText(text)
+                return

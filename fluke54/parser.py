@@ -5,12 +5,28 @@ project memory for the full derivation):
 
     [sample_count: uint16 LE]
     [block_0: 8 bytes -- metadata/header block, not a temperature reading]
-    [block_1 .. block_{sample_count-1}: 8 bytes each -- temperature readings]
+    [block_1 .. block_{sample_count-1}: 8 bytes each -- temperature readings,
+     OR a run-boundary marker block, see below]
     [checksum: 1 byte -- additive sum (mod 256) of all bytes from block_0
      onward, i.e. excluding the leading sample_count field]
 
 Each 8-byte reading block: `FF FF <temp_raw: uint16 LE> <sequence: uint16 LE,
-+1 per sample> 00 00`.
++1 per sample> 01 00`.
+
+If the meter logged more than one run (started/stopped RECALL logging
+more than once) without a memory clear or download in between, all of
+them come back concatenated in a single QD response, with one
+run-boundary marker block between each pair of runs: `00 00 00 00 <2
+bytes, unknown> <2 bytes, unknown>` -- i.e. the same 8-byte shape as a
+reading block, but tagged `00 00` where a real reading is always tagged
+`FF FF`. Confirmed empirically against a real two-run log (Tunnel 8,
+then Tunnel 9, ~60s each, no download in between): the marker's own
+would-be "temp_raw" field decodes to 0 (an impossible temperature) and
+its would-be "sequence" field is unrelated to the surrounding readings'
+sequence numbers, consistent with it being a distinct record type we
+haven't fully decoded rather than a corrupt/glitched reading. Each run's
+own readings still increment their sequence field by exactly +1 per
+sample; only the base value differs from one run to the next.
 
 temp_raw -> degrees Celsius via an empirically fit linear calibration:
 
@@ -41,6 +57,8 @@ logger = get_logger(__name__)
 
 ID_DATA_TERMINATOR = b"\r"
 QD_PREFIX = b"QD,"
+READING_TAG = b"\xff\xff"
+RUN_BOUNDARY_TAG = b"\x00\x00"
 
 # Empirically fit via linear regression against 6 precise manual meter
 # readings taken during a rapid temperature ramp (raw values 8154-8303
@@ -100,14 +118,25 @@ def parse_qd(data: bytes) -> LogSession:
         )
 
     readings: list[Reading] = []
+    run_starts = [0]
     # block_0 (right after the count field) is a metadata/header block, not a
     # reading -- real readings start at block_1.
     for i in range(1, sample_count):
         offset = 2 + i * 8
         block = payload[offset:offset + 8]
-        temp_raw = struct.unpack_from("<H", block, 2)[0]
-        seq = struct.unpack_from("<H", block, 4)[0]
-        temp_c = temp_raw * RAW_TO_CELSIUS_SLOPE + RAW_TO_CELSIUS_INTERCEPT
-        readings.append(Reading(sequence=seq, temperature_c=temp_c))
+        tag = block[:2]
 
-    return LogSession(index=-1, sample_count=sample_count, readings=readings)
+        if tag == READING_TAG:
+            temp_raw = struct.unpack_from("<H", block, 2)[0]
+            seq = struct.unpack_from("<H", block, 4)[0]
+            temp_c = temp_raw * RAW_TO_CELSIUS_SLOPE + RAW_TO_CELSIUS_INTERCEPT
+            readings.append(Reading(sequence=seq, temperature_c=temp_c))
+        elif tag == RUN_BOUNDARY_TAG:
+            # Not a reading -- marks that the next one starts a new logged
+            # run. Dropped from `readings`; recorded as a split point instead.
+            if readings and run_starts[-1] != len(readings):
+                run_starts.append(len(readings))
+        else:
+            logger.warning("Unrecognized block tag %s at block %d -- skipping", tag.hex(), i)
+
+    return LogSession(index=-1, sample_count=sample_count, readings=readings, run_starts=run_starts)
