@@ -6,8 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from app.resources import resource_path  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.theme import STYLESHEET  # noqa: E402
 
@@ -15,6 +17,7 @@ from app.ui.theme import STYLESHEET  # noqa: E402
 def main() -> int:
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
+    app.setWindowIcon(QIcon(str(resource_path("icon.ico"))))
 
     window = MainWindow()
     window.show()
