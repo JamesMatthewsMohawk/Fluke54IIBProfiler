@@ -9,69 +9,41 @@ Usage:
         Signs a license key for that customer/machine using
         license_signing_key.pem. The machine ID comes from the Settings
         tab's License card on the PC that will run the app.
+
+See license_key_gui.py for a point-and-click version of "issue" that
+doesn't need a terminal.
 """
 from __future__ import annotations
 
-import base64
 import sys
-import uuid
-from pathlib import Path
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-KEY_PREFIX = "KOTPRO-"
-PRIVATE_KEY_PATH = Path(__file__).resolve().parent.parent / "license_signing_key.pem"
+from license_key_logic import generate_keypair, issue_key, private_key_path
 
 
 def cmd_keygen() -> None:
-    if PRIVATE_KEY_PATH.exists():
-        print(f"Refusing to overwrite existing {PRIVATE_KEY_PATH}")
+    try:
+        public_key_hex = generate_keypair()
+    except FileExistsError as e:
+        print(e)
         sys.exit(1)
 
-    private_key = Ed25519PrivateKey.generate()
-    pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    PRIVATE_KEY_PATH.write_bytes(pem)
-
-    public_bytes = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    print(f"Wrote private key to {PRIVATE_KEY_PATH} -- keep this secret, never commit it.")
+    print(f"Wrote private key to {private_key_path()} -- keep this secret, never commit it.")
     print()
     print("Paste this into app/licensing.py as _PUBLIC_KEY_HEX:")
-    print(public_bytes.hex())
+    print(public_key_hex)
 
 
 def cmd_issue(customer: str, machine_id: str) -> None:
     """customer is only printed here for your own bookkeeping -- it is not
     part of the signed key, so keep your own record of who has which key."""
-    if not PRIVATE_KEY_PATH.exists():
-        print(f"No signing key at {PRIVATE_KEY_PATH} -- run 'keygen' first.")
-        sys.exit(1)
-
-    private_key = serialization.load_pem_private_key(PRIVATE_KEY_PATH.read_bytes(), password=None)
-    if not isinstance(private_key, Ed25519PrivateKey):
-        print(f"{PRIVATE_KEY_PATH} is not an Ed25519 private key.")
-        sys.exit(1)
-
     try:
-        machine_id_bytes = uuid.UUID(machine_id).bytes
-    except ValueError:
-        print(f"'{machine_id}' doesn't look like a machine ID (expected a GUID).")
+        key = issue_key(machine_id)
+    except (ValueError, FileNotFoundError) as e:
+        print(e)
         sys.exit(1)
 
-    signature = private_key.sign(machine_id_bytes)
-    blob = machine_id_bytes + signature
-
-    b32 = base64.b32encode(blob).decode("ascii").rstrip("=")
-    grouped = "-".join(b32[i:i + 5] for i in range(0, len(b32), 5))
     print(f"License for {customer} ({machine_id}):")
-    print(f"{KEY_PREFIX}{grouped}")
+    print(key)
 
 
 def main() -> int:
