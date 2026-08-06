@@ -138,65 +138,31 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(tabs, stretch=1)
         self._tabs = tabs
 
-        tabs.addTab(self._build_profile_tab(), "Profile")
+        self._chart_tab_index = tabs.addTab(self._build_chart_tab(), "Chart")
 
         self._database_tab = DatabaseTabWidget(self._conn, lambda: self._display_unit)
         self._database_tab.open_run_requested.connect(self._on_open_run_from_database)
         tabs.addTab(self._database_tab, "Database")
 
+        tabs.addTab(self._build_download_tab(), "Download")
+        tabs.addTab(self._build_settings_tab(), "Settings")
+
         self.statusBar().showMessage("Idle")
 
-    def _build_profile_tab(self) -> QWidget:
+    def _build_chart_tab(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_control_panel())
-        splitter.addWidget(self._build_main_panel())
+        splitter.addWidget(self._build_chart_actions_panel())
+        splitter.addWidget(self._build_chart_main_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 900])
+        splitter.setSizes([220, 960])
         return splitter
 
-    def _build_control_panel(self) -> QWidget:
+    def _build_chart_actions_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMaximumWidth(300)
+        panel.setMaximumWidth(260)
         layout = QVBoxLayout(panel)
         layout.setSpacing(12)
-
-        plant_label = QLabel("Plant")
-        plant_label.setObjectName("SectionLabel")
-        self._plant_edit = QLineEdit(str(self._settings.value("last_plant", "")))
-        self._plant_edit.setPlaceholderText("e.g. North Plant")
-
-        tunnel_label = QLabel("Tunnel")
-        tunnel_label.setObjectName("SectionLabel")
-        self._tunnel_edit = QLineEdit(str(self._settings.value("last_tunnel", "")))
-        self._tunnel_edit.setPlaceholderText("e.g. 3 or Superba A")
-
-        layout.addWidget(_card(
-            plant_label, self._plant_edit, tunnel_label, self._tunnel_edit,
-            title="Location",
-        ))
-
-        display_unit_row, self._display_unit_group = _unit_radio_row(self, self._display_unit)
-        self._display_unit_group.buttonClicked.connect(self._on_display_unit_changed)
-        layout.addWidget(_card(display_unit_row, title="Display Unit"))
-
-        self._meter_status_label = QLabel("Idle")
-        port = find_fluke_port()
-        self._port_label = QLabel(port or "Not detected")
-
-        source_unit_caption = QLabel("Meter Showed (at log time)")
-        source_unit_caption.setObjectName("SectionLabel")
-        source_unit_row, self._source_unit_group = _unit_radio_row(self, "C")
-
-        layout.addWidget(_card(
-            self._meter_status_label, self._port_label,
-            source_unit_caption, source_unit_row,
-            title="Meter",
-        ))
-
-        self._download_button = QPushButton("Download Profile")
-        self._download_button.clicked.connect(self._on_download_clicked)
-        layout.addWidget(self._download_button)
 
         self._export_button = QPushButton("Export Graph as PNG")
         self._export_button.setObjectName("SecondaryButton")
@@ -221,7 +187,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return panel
 
-    def _build_main_panel(self) -> QWidget:
+    def _build_chart_main_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setSpacing(12)
@@ -237,6 +203,75 @@ class MainWindow(QMainWindow):
         self._recent_list.itemDoubleClicked.connect(self._on_recent_item_double_clicked)
         layout.addWidget(self._recent_list, stretch=1)
 
+        return panel
+
+    def _build_download_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        content = QWidget()
+        content.setMaximumWidth(360)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+
+        plant_label = QLabel("Plant")
+        plant_label.setObjectName("SectionLabel")
+        self._plant_edit = QLineEdit(str(self._settings.value("last_plant", "")))
+        self._plant_edit.setPlaceholderText("e.g. North Plant")
+
+        tunnel_label = QLabel("Tunnel")
+        tunnel_label.setObjectName("SectionLabel")
+        self._tunnel_edit = QLineEdit(str(self._settings.value("last_tunnel", "")))
+        self._tunnel_edit.setPlaceholderText("e.g. 3 or Superba A")
+
+        content_layout.addWidget(_card(
+            plant_label, self._plant_edit, tunnel_label, self._tunnel_edit,
+            title="Location",
+        ))
+
+        self._meter_status_label = QLabel("Idle")
+        port = find_fluke_port()
+        self._port_label = QLabel(port or "Not detected")
+
+        source_unit_caption = QLabel("Meter Showed (at log time)")
+        source_unit_caption.setObjectName("SectionLabel")
+        source_unit_row, self._source_unit_group = _unit_radio_row(self, "C")
+
+        content_layout.addWidget(_card(
+            self._meter_status_label, self._port_label,
+            source_unit_caption, source_unit_row,
+            title="Meter",
+        ))
+
+        self._download_button = QPushButton("Download Profile")
+        self._download_button.clicked.connect(self._on_download_clicked)
+        content_layout.addWidget(self._download_button)
+
+        content_layout.addStretch(1)
+        layout.addWidget(content)
+        layout.addStretch(1)
+        return panel
+
+    def _build_settings_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        content = QWidget()
+        content.setMaximumWidth(360)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+
+        display_unit_row, self._display_unit_group = _unit_radio_row(self, self._display_unit)
+        self._display_unit_group.buttonClicked.connect(self._on_display_unit_changed)
+        content_layout.addWidget(_card(display_unit_row, title="Display Unit"))
+
+        content_layout.addStretch(1)
+        layout.addWidget(content)
+        layout.addStretch(1)
         return panel
 
     # ------------------------------------------------------------ actions
@@ -310,6 +345,7 @@ class MainWindow(QMainWindow):
 
         self._reload_recent_runs()
         self._database_tab.refresh()
+        self._tabs.setCurrentIndex(self._chart_tab_index)
 
     def _on_download_failed(self, message: str) -> None:
         self._meter_status_label.setText("Error")
@@ -352,7 +388,7 @@ class MainWindow(QMainWindow):
         temperature_c = [m.temperature_c for m in measurements]
         self._plot_run(run, elapsed_time_s, temperature_c)
 
-        self._tabs.setCurrentIndex(0)
+        self._tabs.setCurrentIndex(self._chart_tab_index)
 
     def _plot_run(self, run: Run, elapsed_time_s: list[float], temperature_c: list[float]) -> None:
         self._active_plots[run.id] = _ActivePlot(
