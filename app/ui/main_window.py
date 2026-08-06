@@ -195,6 +195,10 @@ class MainWindow(QMainWindow):
         self._graph = ProfileGraphWidget()
         layout.addWidget(self._graph, stretch=3)
 
+        drag_hint = QLabel("Drag a curve to shift it in time (start/end alignment) · double-click a curve to reset it")
+        drag_hint.setObjectName("HintLabel")
+        layout.addWidget(drag_hint)
+
         recent_label = QLabel("RECENT PROFILES")
         recent_label.setObjectName("SectionLabel")
         layout.addWidget(recent_label)
@@ -432,8 +436,14 @@ class MainWindow(QMainWindow):
 
     def _plotted_runs_for_export(self) -> list[tuple[Run, list[tuple[float, float]]]]:
         return [
-            (active.run, list(zip(active.elapsed_time_s, active.temperature_c)))
-            for active in self._active_plots.values()
+            (
+                active.run,
+                [
+                    (t + self._graph.get_offset(run_id), temp)
+                    for t, temp in zip(active.elapsed_time_s, active.temperature_c)
+                ],
+            )
+            for run_id, active in self._active_plots.items()
         ]
 
     def _on_export_plotted_csv_clicked(self) -> None:

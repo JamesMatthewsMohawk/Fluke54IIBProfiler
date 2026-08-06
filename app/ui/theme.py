@@ -39,6 +39,11 @@ QLabel#SectionLabel {{
     letter-spacing: 1px;
 }}
 
+QLabel#HintLabel {{
+    font-size: 11px;
+    color: {TEXT_MUTED};
+}}
+
 QFrame#Card {{
     background-color: {SURFACE};
     border: 1px solid {BORDER};
