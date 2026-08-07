@@ -58,13 +58,7 @@ class ProfileGraphWidget(QWidget):
         # by accident, leaving it anywhere over the plot. Pin it in place.
         legend.mouseDragEvent = self._ignore_axis_event
 
-        # Dragging/scrolling directly on the Y-axis strip forwards to the
-        # ViewBox as a single-axis rescale (pyqtgraph's built-in "axis edge"
-        # gesture) -- block just that, so the axis itself is inert while
-        # ordinary in-plot wheel/drag zoom on Y still works normally.
-        y_axis = self._plot_widget.getAxis("left")
-        y_axis.mouseDragEvent = self._ignore_axis_event
-        y_axis.wheelEvent = self._ignore_axis_event
+        view_box = self._plot_widget.plotItem.vb
 
         # A plain in-plot wheel scroll normally scales X and Y together in
         # one step (pyqtgraph's default when both axes are mouse-enabled).
@@ -73,8 +67,18 @@ class ProfileGraphWidget(QWidget):
         # Force each wheel tick to a single axis instead: plain scroll only
         # ever touches X (identical to the pre-Y-zoom behavior), Ctrl+scroll
         # only touches Y.
-        view_box = self._plot_widget.plotItem.vb
         view_box.wheelEvent = self._make_single_axis_wheel_event(view_box)
+
+        # Left-drag or scroll directly on the Y-axis strip mirrors the
+        # X-axis strip's existing behavior (pyqtgraph's default AxisItem
+        # gesture, never blocked there): drag to pan, scroll to zoom --
+        # except scrolling here always zooms Y with no Ctrl needed, since
+        # hovering the Y numbers unambiguously means "adjust Y". That needs
+        # calling ViewBox.wheelEvent directly rather than through the
+        # Ctrl-aware override just above, which would otherwise ignore the
+        # forced axis and zoom X on a plain scroll.
+        y_axis = self._plot_widget.getAxis("left")
+        y_axis.wheelEvent = self._make_fixed_axis_wheel_event(view_box, axis=1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -142,6 +146,13 @@ class ProfileGraphWidget(QWidget):
         def _wheel_event(event, axis=None):
             forced_axis = 1 if event.modifiers() & Qt.KeyboardModifier.ControlModifier else 0
             pg.ViewBox.wheelEvent(view_box, event, axis=forced_axis)
+
+        return _wheel_event
+
+    @staticmethod
+    def _make_fixed_axis_wheel_event(view_box: pg.ViewBox, axis: int):
+        def _wheel_event(event):
+            pg.ViewBox.wheelEvent(view_box, event, axis=axis)
 
         return _wheel_event
 
