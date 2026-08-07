@@ -137,8 +137,7 @@ QListWidget::item {{
 }}
 
 QListWidget::item:selected {{
-    background-color: {ACCENT};
-    color: white;
+    background-color: transparent;
 }}
 
 QScrollBar:vertical {{

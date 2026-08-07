@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS runs (
     peak_temp_c REAL NOT NULL,
     min_temp_c REAL NOT NULL,
     measurement_count INTEGER NOT NULL,
-    source_unit TEXT NOT NULL DEFAULT 'C'
+    source_unit TEXT NOT NULL DEFAULT 'C',
+    last_viewed_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS measurements (
@@ -103,6 +104,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
                 WHERE tunnel = ''
             """)
 
+    if "last_viewed_at" not in run_columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN last_viewed_at TEXT NOT NULL DEFAULT ''")
+        # Recent Profiles previously sorted by run_date -- backfill so
+        # existing runs keep that same order until one is actually viewed.
+        conn.execute("UPDATE runs SET last_viewed_at = run_date WHERE last_viewed_at = ''")
+
     if "tunnel_id" in run_columns:
         conn.execute("DROP INDEX IF EXISTS idx_runs_tunnel_id")
         conn.execute("ALTER TABLE runs DROP COLUMN tunnel_id")
@@ -140,10 +147,10 @@ def create_run(
     cur = conn.execute(
         """
         INSERT INTO runs (plant, tunnel, run_date, peak_temp_c, min_temp_c,
-                           measurement_count, source_unit)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+                           measurement_count, source_unit, last_viewed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (plant, tunnel, run_date, peak_temp, min_temp, len(points), source_unit),
+        (plant, tunnel, run_date, peak_temp, min_temp, len(points), source_unit, run_date),
     )
     run_id = cur.lastrowid
 
@@ -161,11 +168,12 @@ def create_run(
 
 
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[Run]:
+    """Most recently *viewed* first (see touch_run_viewed), not most recently logged."""
     rows = conn.execute(
         """
         SELECT id, plant, tunnel, run_date, peak_temp_c, min_temp_c,
                measurement_count, source_unit
-        FROM runs ORDER BY run_date DESC LIMIT ?
+        FROM runs ORDER BY last_viewed_at DESC LIMIT ?
         """,
         (limit,),
     ).fetchall()
@@ -177,6 +185,20 @@ def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[Run]:
         )
         for r in rows
     ]
+
+
+def touch_run_viewed(conn: sqlite3.Connection, run_id: int) -> None:
+    """Mark a run as just-viewed, bumping it to the top of list_runs().
+
+    Microsecond precision, unlike run_date's second precision -- two runs
+    viewed in quick succession (a fast double-click through the list)
+    would otherwise tie and leave their relative order ambiguous.
+    """
+    conn.execute(
+        "UPDATE runs SET last_viewed_at = ? WHERE id = ?",
+        (datetime.now(timezone.utc).isoformat(timespec="microseconds"), run_id),
+    )
+    conn.commit()
 
 
 def search_runs(

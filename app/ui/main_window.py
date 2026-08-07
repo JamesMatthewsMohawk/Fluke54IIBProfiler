@@ -38,6 +38,7 @@ from .graph_widget import ProfileGraphWidget
 from .run_names_dialog import RunNamesDialog
 
 LOG_INDEX = 1
+RECENT_PROFILES_LIMIT = 5
 SAMPLE_INTERVAL_S = 1.0
 
 
@@ -208,7 +209,7 @@ class MainWindow(QMainWindow):
 
         self._recent_list = QListWidget()
         self._recent_list.itemDoubleClicked.connect(self._on_recent_item_double_clicked)
-        layout.addWidget(self._recent_list, stretch=1)
+        layout.addWidget(self._recent_list)
 
         return panel
 
@@ -308,12 +309,28 @@ class MainWindow(QMainWindow):
     def _reload_recent_runs(self) -> None:
         self._recent_list.clear()
         self._recent_items = {}
-        for run in database.list_runs(self._conn, limit=50):
+        for run in database.list_runs(self._conn, limit=RECENT_PROFILES_LIMIT):
             item = QListWidgetItem(self._format_run_summary(run))
             item.setData(Qt.ItemDataRole.UserRole, run.id)
             self._recent_list.addItem(item)
             self._recent_items[run.id] = item
         self._apply_active_highlights()
+        self._fix_recent_list_height()
+
+    def _fix_recent_list_height(self) -> None:
+        """Size the list to exactly RECENT_PROFILES_LIMIT rows, so it never scrolls.
+
+        sizeHintForRow needs a real row to measure against the applied
+        stylesheet's padding/border -- with none yet (a first run before
+        any profile exists), fall back to a font-metrics estimate that
+        matches theme.py's QListWidget::item padding (8px top+bottom) and
+        1px border-bottom.
+        """
+        row_height = self._recent_list.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = self._recent_list.fontMetrics().height() + 16 + 1
+        frame = self._recent_list.frameWidth() * 2
+        self._recent_list.setFixedHeight(row_height * RECENT_PROFILES_LIMIT + frame)
 
     def _format_run_summary(self, run: Run) -> str:
         peak = convert_from_celsius(run.peak_temp_c, self._display_unit)
@@ -449,6 +466,7 @@ class MainWindow(QMainWindow):
         elapsed_time_s = [m.elapsed_time_s for m in measurements]
         temperature_c = [m.temperature_c for m in measurements]
         self._plot_run(run, elapsed_time_s, temperature_c)
+        self._reload_recent_runs()
 
     def _on_open_run_from_database(self, run_id: int) -> None:
         run = database.get_run(self._conn, run_id)
@@ -463,10 +481,12 @@ class MainWindow(QMainWindow):
         elapsed_time_s = [m.elapsed_time_s for m in measurements]
         temperature_c = [m.temperature_c for m in measurements]
         self._plot_run(run, elapsed_time_s, temperature_c)
+        self._reload_recent_runs()
 
         self._tabs.setCurrentIndex(self._chart_tab_index)
 
     def _plot_run(self, run: Run, elapsed_time_s: list[float], temperature_c: list[float]) -> None:
+        database.touch_run_viewed(self._conn, run.id)
         self._active_plots[run.id] = _ActivePlot(
             run=run, elapsed_time_s=elapsed_time_s, temperature_c=temperature_c,
         )
