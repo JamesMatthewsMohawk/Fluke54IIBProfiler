@@ -3,4 +3,4 @@ git tag, e.g. tag v1.0.7 -> __version__ = "1.0.7"). Used only to compare
 against the latest GitHub release for the update-available notice; never
 read from git at runtime since a frozen build has no .git directory."""
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
