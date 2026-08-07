@@ -48,9 +48,15 @@ class ProfileGraphWidget(QWidget):
         self._plot_widget.setLabel("left", "Temperature")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self._plot_widget.setMouseEnabled(x=True, y=True)
-        self._plot_widget.addLegend(offset=(10, 10))
+        legend = self._plot_widget.addLegend(offset=(10, 10))
         self._plot_widget.setXRange(*DEFAULT_X_RANGE_S, padding=0)
         self._apply_y_range()
+
+        # pyqtgraph legends are click-and-drag movable by default, with no
+        # public flag to disable it -- and a drag started near the legend
+        # (right next to the curve-drag feature below) easily relocates it
+        # by accident, leaving it anywhere over the plot. Pin it in place.
+        legend.mouseDragEvent = self._ignore_axis_event
 
         # Dragging/scrolling directly on the Y-axis strip forwards to the
         # ViewBox as a single-axis rescale (pyqtgraph's built-in "axis edge"
