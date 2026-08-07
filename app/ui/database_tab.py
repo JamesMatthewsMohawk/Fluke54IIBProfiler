@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from app import database
 from app.data_export import export_runs_to_csv, export_runs_to_excel
 from app.models import Measurement, Run
+from app.time_format import format_run_date
 from app.units import convert_from_celsius
 
 COLUMNS = ["Date", "Plant", "Tunnel", "Peak", "Points", "Logged"]
@@ -44,11 +45,13 @@ class DatabaseTabWidget(QWidget):
         self,
         conn: sqlite3.Connection,
         get_display_unit: Callable[[], str],
+        get_use_local_time: Callable[[], bool],
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._conn = conn
         self._get_display_unit = get_display_unit
+        self._get_use_local_time = get_use_local_time
         self._runs_by_row: list[Run] = []
 
         self._build_ui()
@@ -167,13 +170,14 @@ class DatabaseTabWidget(QWidget):
     def _populate_table(self, runs: list[Run]) -> None:
         self._runs_by_row = runs
         unit = self._get_display_unit()
+        use_local_time = self._get_use_local_time()
 
         self._table.setSortingEnabled(False)
         self._table.setRowCount(len(runs))
         for row, run in enumerate(runs):
             peak = convert_from_celsius(run.peak_temp_c, unit)
             values = [
-                run.run_date, run.plant, run.tunnel,
+                format_run_date(run.run_date, use_local_time), run.plant, run.tunnel,
                 f"{peak:.1f}°{unit}",
                 str(run.measurement_count), f"°{run.source_unit}",
             ]
@@ -226,6 +230,10 @@ class DatabaseTabWidget(QWidget):
         elif chosen is export_excel_action:
             self._export_run_excel(run)
 
+    def _default_export_name(self, run: Run) -> str:
+        run_date = format_run_date(run.run_date, self._get_use_local_time())
+        return f"{run.plant}_{run.tunnel}_{run_date}".replace(":", "-").replace(" ", "_")
+
     def _export_run_png(self, run: Run | None) -> None:
         if run is None:
             return
@@ -233,7 +241,7 @@ class DatabaseTabWidget(QWidget):
         if not measurements:
             QMessageBox.warning(self, "No Data", "This run has no measurements to export.")
             return
-        default_name = f"{run.plant}_{run.tunnel}_{run.run_date}".replace(":", "-").replace(" ", "_")
+        default_name = self._default_export_name(run)
         path, _ = QFileDialog.getSaveFileName(self, "Export Run Graph", f"{default_name}.png", "PNG Images (*.png)")
         if not path:
             return
@@ -249,18 +257,21 @@ class DatabaseTabWidget(QWidget):
         if run is None:
             return
         measurements = database.get_measurements(self._conn, run.id)
-        default_name = f"{run.plant}_{run.tunnel}_{run.run_date}".replace(":", "-").replace(" ", "_")
+        default_name = self._default_export_name(run)
         path, _ = QFileDialog.getSaveFileName(self, "Export Run Data", f"{default_name}.csv", "CSV Files (*.csv)")
         if not path:
             return
-        export_runs_to_csv(path, [(run, [(m.elapsed_time_s, m.temperature_c) for m in measurements])])
+        export_runs_to_csv(
+            path, [(run, [(m.elapsed_time_s, m.temperature_c) for m in measurements])],
+            use_local_time=self._get_use_local_time(),
+        )
         QMessageBox.information(self, "Export Complete", f"Run data exported to:\n{path}")
 
     def _export_run_excel(self, run: Run | None) -> None:
         if run is None:
             return
         measurements = database.get_measurements(self._conn, run.id)
-        default_name = f"{run.plant}_{run.tunnel}_{run.run_date}".replace(":", "-").replace(" ", "_")
+        default_name = self._default_export_name(run)
         path, _ = QFileDialog.getSaveFileName(self, "Export Run Data", f"{default_name}.xlsx", "Excel Files (*.xlsx)")
         if not path:
             return
@@ -268,6 +279,7 @@ class DatabaseTabWidget(QWidget):
             path,
             [(run, [(m.elapsed_time_s, m.temperature_c) for m in measurements])],
             self._get_display_unit(),
+            use_local_time=self._get_use_local_time(),
         )
         QMessageBox.information(self, "Export Complete", f"Run data exported to:\n{path}")
 
@@ -338,7 +350,7 @@ class DatabaseTabWidget(QWidget):
             body_font.setBold(False)
             painter.setFont(body_font)
             lines = [
-                f"Run date: {run.run_date}",
+                f"Run date: {format_run_date(run.run_date, self._get_use_local_time())}",
                 f"Peak temp: {peak:.1f}°{unit}    Min temp: {min_t:.1f}°{unit}",
                 f"Measurement points: {run.measurement_count}    Meter displayed: °{run.source_unit} at log time",
             ]

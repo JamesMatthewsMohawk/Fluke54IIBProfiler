@@ -28,6 +28,7 @@ from app import database, licensing
 from app.data_export import export_runs_to_csv, export_runs_to_excel
 from app.models import Run
 from app.profile_builder import build_profile
+from app.time_format import format_run_date
 from app.units import convert_from_celsius
 from fluke54.connection import find_fluke_port
 from fluke54.models import LogSession, Reading
@@ -79,6 +80,21 @@ def _unit_radio_row(parent: QWidget, default_unit: str = "C") -> tuple[QWidget, 
     return row_widget, group
 
 
+def _time_display_radio_row(parent: QWidget, default_use_local: bool) -> tuple[QWidget, QButtonGroup]:
+    group = QButtonGroup(parent)
+    row_widget = QWidget()
+    row = QHBoxLayout(row_widget)
+    row.setContentsMargins(0, 0, 0, 0)
+    for label, use_local in (("UTC", False), ("Local Time", True)):
+        radio = QRadioButton(label)
+        radio.setProperty("use_local_time", use_local)
+        if use_local == default_use_local:
+            radio.setChecked(True)
+        group.addButton(radio)
+        row.addWidget(radio)
+    return row_widget, group
+
+
 def _set_item_active_style(item: QListWidgetItem, color: str | None) -> None:
     """Mark a recent-run list item as plotted (or not) on the graph.
 
@@ -95,9 +111,9 @@ def _set_item_active_style(item: QListWidgetItem, color: str | None) -> None:
     item.setForeground(QColor(color) if color else QBrush())
 
 
-def _run_label(run: Run) -> str:
+def _run_label(run: Run, use_local_time: bool) -> str:
     location = f"{run.plant} / {run.tunnel}" if run.plant else run.tunnel
-    return f"{location} ({run.run_date})"
+    return f"{location} ({format_run_date(run.run_date, use_local_time)})"
 
 
 class MainWindow(QMainWindow):
@@ -114,6 +130,7 @@ class MainWindow(QMainWindow):
 
         self._settings = QSettings("SuperbaProfiler", "TunnelProfiler")
         self._display_unit = str(self._settings.value("display_unit", "C"))
+        self._use_local_time = bool(self._settings.value("use_local_time", False, type=bool))
         self._license_key = str(self._settings.value("license_key", ""))
 
         self._active_plots: dict[int, _ActivePlot] = {}
@@ -144,7 +161,7 @@ class MainWindow(QMainWindow):
 
         self._chart_tab_index = tabs.addTab(self._build_chart_tab(), "Chart")
 
-        self._database_tab = DatabaseTabWidget(self._conn, lambda: self._display_unit)
+        self._database_tab = DatabaseTabWidget(self._conn, lambda: self._display_unit, lambda: self._use_local_time)
         self._database_tab.open_run_requested.connect(self._on_open_run_from_database)
         tabs.addTab(self._database_tab, "Database")
 
@@ -282,6 +299,12 @@ class MainWindow(QMainWindow):
         self._display_unit_group.buttonClicked.connect(self._on_display_unit_changed)
         content_layout.addWidget(_card(display_unit_row, title="Display Unit"))
 
+        time_display_row, self._time_display_group = _time_display_radio_row(self, self._use_local_time)
+        self._time_display_group.buttonClicked.connect(self._on_time_display_changed)
+        time_display_hint = QLabel("Viewing only -- doesn't change stored data.")
+        time_display_hint.setObjectName("HintLabel")
+        content_layout.addWidget(_card(time_display_row, time_display_hint, title="Timestamp Display"))
+
         self._license_status_label = QLabel()
         machine_id_label = QLabel(f"Machine ID: {licensing.get_machine_id()}")
         machine_id_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -335,7 +358,8 @@ class MainWindow(QMainWindow):
     def _format_run_summary(self, run: Run) -> str:
         peak = convert_from_celsius(run.peak_temp_c, self._display_unit)
         location = f"{run.plant}  |  {run.tunnel}" if run.plant else run.tunnel
-        return (f"{run.run_date}  |  {location}  |  "
+        run_date = format_run_date(run.run_date, self._use_local_time)
+        return (f"{run_date}  |  {location}  |  "
                 f"peak {peak:.1f}°{self._display_unit}"
                 f"  |  logged °{run.source_unit}")
 
@@ -491,7 +515,7 @@ class MainWindow(QMainWindow):
             run=run, elapsed_time_s=elapsed_time_s, temperature_c=temperature_c,
         )
         temperature_display = [convert_from_celsius(t, self._display_unit) for t in temperature_c]
-        self._graph.plot_profile(run.id, elapsed_time_s, temperature_display, _run_label(run))
+        self._graph.plot_profile(run.id, elapsed_time_s, temperature_display, _run_label(run, self._use_local_time))
 
         item = self._recent_items.get(run.id)
         if item is not None:
@@ -515,7 +539,23 @@ class MainWindow(QMainWindow):
 
         for run_id, active in self._active_plots.items():
             temperature_display = [convert_from_celsius(t, unit) for t in active.temperature_c]
-            self._graph.plot_profile(run_id, active.elapsed_time_s, temperature_display, _run_label(active.run))
+            label = _run_label(active.run, self._use_local_time)
+            self._graph.plot_profile(run_id, active.elapsed_time_s, temperature_display, label)
+
+        self._reload_recent_runs()
+        self._database_tab.refresh()
+
+    def _on_time_display_changed(self, button) -> None:
+        use_local_time = bool(button.property("use_local_time"))
+        if use_local_time == self._use_local_time:
+            return
+        self._use_local_time = use_local_time
+        self._settings.setValue("use_local_time", use_local_time)
+
+        for run_id, active in self._active_plots.items():
+            temperature_display = [convert_from_celsius(t, self._display_unit) for t in active.temperature_c]
+            label = _run_label(active.run, use_local_time)
+            self._graph.plot_profile(run_id, active.elapsed_time_s, temperature_display, label)
 
         self._reload_recent_runs()
         self._database_tab.refresh()
@@ -546,7 +586,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Export Plotted Data", "plotted_data.csv", "CSV Files (*.csv)")
         if not path:
             return
-        export_runs_to_csv(path, runs)
+        export_runs_to_csv(path, runs, use_local_time=self._use_local_time)
         self.statusBar().showMessage(f"Exported to {path}", 5000)
 
     def _on_export_plotted_excel_clicked(self) -> None:
@@ -557,7 +597,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Export Plotted Data", "plotted_data.xlsx", "Excel Files (*.xlsx)")
         if not path:
             return
-        export_runs_to_excel(path, runs, self._display_unit)
+        export_runs_to_excel(path, runs, self._display_unit, use_local_time=self._use_local_time)
         self.statusBar().showMessage(f"Exported to {path}", 5000)
 
     def _on_clear_graph_clicked(self) -> None:

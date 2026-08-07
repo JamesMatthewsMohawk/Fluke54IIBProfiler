@@ -3,7 +3,8 @@
 Each run is passed as (Run, [(elapsed_time_s, temperature_c), ...]) -- raw
 Celsius, matching the DB's canonical storage. CSV always writes Celsius, for
 data fidelity; Excel converts to the given display unit since it's meant to
-be read alongside what's shown on screen.
+be read alongside what's shown on screen. run_date is stored in UTC and
+formatted per use_local_time -- see app/time_format.py.
 """
 from __future__ import annotations
 
@@ -15,12 +16,13 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from app.models import Run
+from app.time_format import format_run_date
 from app.units import convert_from_celsius
 
 RunSeries = tuple[Run, list[tuple[float, float]]]
 
 
-def export_runs_to_csv(path: str, runs: list[RunSeries]) -> None:
+def export_runs_to_csv(path: str, runs: list[RunSeries], use_local_time: bool = False) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -28,15 +30,16 @@ def export_runs_to_csv(path: str, runs: list[RunSeries]) -> None:
             "peak_temp_c", "min_temp_c", "elapsed_time_s", "temperature_c",
         ])
         for run, points in runs:
+            run_date = format_run_date(run.run_date, use_local_time)
             for elapsed_time_s, temperature_c in points:
                 writer.writerow([
-                    run.run_date, run.plant, run.tunnel, run.source_unit,
+                    run_date, run.plant, run.tunnel, run.source_unit,
                     f"{run.peak_temp_c:.2f}", f"{run.min_temp_c:.2f}",
                     elapsed_time_s, f"{temperature_c:.3f}",
                 ])
 
 
-def export_runs_to_excel(path: str, runs: list[RunSeries], unit: str) -> None:
+def export_runs_to_excel(path: str, runs: list[RunSeries], unit: str, use_local_time: bool = False) -> None:
     wb = Workbook()
     data_ws = wb.active
     data_ws.title = "Profile Data"
@@ -51,7 +54,8 @@ def export_runs_to_excel(path: str, runs: list[RunSeries], unit: str) -> None:
     col = 1
     for run, points in runs:
         label = f"{run.plant} / {run.tunnel}" if run.plant else run.tunnel
-        data_ws.cell(row=1, column=col, value=f"{label} ({run.run_date})").font = bold
+        run_date = format_run_date(run.run_date, use_local_time)
+        data_ws.cell(row=1, column=col, value=f"{label} ({run_date})").font = bold
         data_ws.cell(row=2, column=col, value="Time (s)").font = bold
         data_ws.cell(row=2, column=col + 1, value=f"Temp (°{unit})").font = bold
 
@@ -76,7 +80,7 @@ def export_runs_to_excel(path: str, runs: list[RunSeries], unit: str) -> None:
     for r, (run, _points) in enumerate(runs, start=2):
         peak = convert_from_celsius(run.peak_temp_c, unit)
         min_t = convert_from_celsius(run.min_temp_c, unit)
-        summary_ws.cell(row=r, column=1, value=run.run_date)
+        summary_ws.cell(row=r, column=1, value=format_run_date(run.run_date, use_local_time))
         summary_ws.cell(row=r, column=2, value=run.plant)
         summary_ws.cell(row=r, column=3, value=run.tunnel)
         summary_ws.cell(row=r, column=4, value=round(peak, 2))
