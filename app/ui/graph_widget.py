@@ -7,14 +7,13 @@ import pyqtgraph.exporters
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from .theme import DARK, Palette
+
 CURVE_COLORS = ["#3f8cff", "#e0524d", "#3fbf6f", "#f2b705", "#a86ff0", "#00c2c2"]
 DEFAULT_X_RANGE_S = (0.0, 60.0)
 Y_RANGE_BY_UNIT = {"C": (0.0, 195.0), "F": (0.0, 390.0)}
 DRAG_HIT_PIXELS = 10.0
 _TIME_LEGEND_IDLE = "Time: --"
-
-pg.setConfigOption("background", "#22262b")
-pg.setConfigOption("foreground", "#e4e7eb")
 
 
 class ProfileGraphWidget(QWidget):
@@ -38,9 +37,10 @@ class ProfileGraphWidget(QWidget):
     doesn't mean anything specific when multiple runs are overlaid.
     """
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, palette: Palette = DARK):
         super().__init__(parent)
 
+        self._palette = palette
         self._temp_unit = "C"
 
         self._plot_widget = pg.PlotWidget()
@@ -100,7 +100,7 @@ class ProfileGraphWidget(QWidget):
         self._offset_label.setVisible(False)
         self._plot_widget.addItem(self._offset_label, ignoreBounds=True)
 
-        self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#8c94a0", width=1))
+        self._v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(palette.text_muted, width=1))
         self._v_line.setVisible(False)
         self._plot_widget.addItem(self._v_line, ignoreBounds=True)
 
@@ -116,6 +116,33 @@ class ProfileGraphWidget(QWidget):
         )
 
         self._plot_widget.viewport().installEventFilter(self)
+        self.set_theme(palette)
+
+    def set_theme(self, palette: Palette) -> None:
+        """Re-color everything that isn't covered by the app-wide QSS --
+        pyqtgraph items paint themselves, they don't pick up stylesheet
+        rules. Safe to call any time, including from __init__ (v_line,
+        value dots, and the legend all already exist by the time this
+        first runs there)."""
+        self._palette = palette
+        pg.setConfigOption("background", palette.surface)
+        pg.setConfigOption("foreground", palette.text)
+        self._plot_widget.setBackground(palette.surface)
+
+        for axis_name in ("left", "bottom"):
+            axis = self._plot_widget.getAxis(axis_name)
+            axis.setPen(palette.text_muted)
+            axis.setTextPen(palette.text)
+
+        self._v_line.setPen(pg.mkPen(palette.text_muted, width=1))
+
+        for dot in self._value_dots.values():
+            dot.setPen(pg.mkPen(palette.text, width=1))
+
+        legend = self._plot_widget.plotItem.legend
+        if legend is not None:
+            for _sample, label in legend.items:
+                label.setText(label.text, color=palette.text)
 
     def set_temperature_unit(self, unit: str) -> None:
         self._temp_unit = unit
@@ -199,7 +226,7 @@ class ProfileGraphWidget(QWidget):
         self._curves[run_id] = curve
 
         if run_id not in self._value_dots:
-            dot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(color), pen=pg.mkPen("#e4e7eb", width=1))
+            dot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush(color), pen=pg.mkPen(self._palette.text, width=1))
             self._plot_widget.addItem(dot, ignoreBounds=True)
             self._value_dots[run_id] = dot
 
@@ -328,7 +355,7 @@ class ProfileGraphWidget(QWidget):
         name = curve.name() if curve is not None else f"Run {run_id}"
         sign = "+" if offset_s >= 0 else ""
         self._offset_label.setText(f"{name}: {sign}{offset_s:.1f}s")
-        self._offset_label.setColor(self._colors.get(run_id, "#e4e7eb"))
+        self._offset_label.setColor(self._colors.get(run_id, self._palette.text))
         self._offset_label.setPos(x_min, y_max)
         self._offset_label.setVisible(True)
 

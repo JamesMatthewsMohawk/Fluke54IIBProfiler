@@ -33,6 +33,8 @@ from app.models import Measurement, Run
 from app.time_format import format_run_date
 from app.units import convert_from_celsius
 
+from .theme import DARK, Palette
+
 COLUMNS = ["Date", "Plant", "Tunnel", "Peak", "Points", "Logged"]
 
 
@@ -46,12 +48,14 @@ class DatabaseTabWidget(QWidget):
         conn: sqlite3.Connection,
         get_display_unit: Callable[[], str],
         get_use_local_time: Callable[[], bool],
+        get_theme_palette: Callable[[], Palette] = lambda: DARK,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._conn = conn
         self._get_display_unit = get_display_unit
         self._get_use_local_time = get_use_local_time
+        self._get_theme_palette = get_theme_palette
         self._runs_by_row: list[Run] = []
 
         self._build_ui()
@@ -306,7 +310,7 @@ class DatabaseTabWidget(QWidget):
         # (print/PNG export), kept out of this tab's normal import cost.
         from .graph_widget import ProfileGraphWidget
 
-        graph = ProfileGraphWidget()
+        graph = ProfileGraphWidget(palette=self._get_theme_palette())
         graph.resize(900, 500)
         graph.set_temperature_unit(unit)
         temps = [convert_from_celsius(m.temperature_c, unit) for m in measurements]

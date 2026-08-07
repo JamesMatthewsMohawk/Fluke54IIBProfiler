@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtCore import QSettings, QUrl, Qt
+from PySide6.QtGui import QBrush, QColor, QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QFileDialog,
     QFrame,
@@ -30,6 +32,8 @@ from app.models import Run
 from app.profile_builder import build_profile
 from app.time_format import format_run_date
 from app.units import convert_from_celsius
+from app.update_check import ReleaseInfo
+from app.version import __version__
 from fluke54.connection import find_fluke_port
 from fluke54.models import LogSession, Reading
 
@@ -37,6 +41,8 @@ from .database_tab import DatabaseTabWidget
 from .download_worker import DownloadWorker
 from .graph_widget import ProfileGraphWidget
 from .run_names_dialog import RunNamesDialog
+from .theme import DARK, THEMES, build_stylesheet
+from .update_check_worker import UpdateCheckWorker
 
 LOG_INDEX = 1
 RECENT_PROFILES_LIMIT = 5
@@ -95,6 +101,21 @@ def _time_display_radio_row(parent: QWidget, default_use_local: bool) -> tuple[Q
     return row_widget, group
 
 
+def _theme_radio_row(parent: QWidget, default_theme: str) -> tuple[QWidget, QButtonGroup]:
+    group = QButtonGroup(parent)
+    row_widget = QWidget()
+    row = QHBoxLayout(row_widget)
+    row.setContentsMargins(0, 0, 0, 0)
+    for theme_name in THEMES:
+        radio = QRadioButton(theme_name)
+        radio.setProperty("theme_name", theme_name)
+        if theme_name == default_theme:
+            radio.setChecked(True)
+        group.addButton(radio)
+        row.addWidget(radio)
+    return row_widget, group
+
+
 def _set_item_active_style(item: QListWidgetItem, color: str | None) -> None:
     """Mark a recent-run list item as plotted (or not) on the graph.
 
@@ -119,7 +140,7 @@ def _run_label(run: Run, use_local_time: bool) -> str:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Superba Tunnel Profiler")
+        self.setWindowTitle(f"Superba Tunnel Profiler v{__version__}")
         self.resize(1200, 800)
 
         self._conn = database.get_connection()
@@ -133,6 +154,12 @@ class MainWindow(QMainWindow):
         self._use_local_time = bool(self._settings.value("use_local_time", False, type=bool))
         self._license_key = str(self._settings.value("license_key", ""))
 
+        self._theme_name = str(self._settings.value("theme", "Dark"))
+        self._palette = THEMES.get(self._theme_name, DARK)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_stylesheet(self._palette))
+
         self._active_plots: dict[int, _ActivePlot] = {}
         self._recent_items: dict[int, QListWidgetItem] = {}
 
@@ -141,6 +168,10 @@ class MainWindow(QMainWindow):
         self._reload_recent_runs()
         self._database_tab.refresh()
         self._refresh_license_gate()
+
+        self._update_worker = UpdateCheckWorker()
+        self._update_worker.update_found.connect(self._on_update_found)
+        self._update_worker.start()
 
     # ---------------------------------------------------------------- UI
 
@@ -155,13 +186,17 @@ class MainWindow(QMainWindow):
         title.setObjectName("TitleLabel")
         root_layout.addWidget(title)
 
+        root_layout.addWidget(self._build_update_banner())
+
         tabs = QTabWidget()
         root_layout.addWidget(tabs, stretch=1)
         self._tabs = tabs
 
         self._chart_tab_index = tabs.addTab(self._build_chart_tab(), "Chart")
 
-        self._database_tab = DatabaseTabWidget(self._conn, lambda: self._display_unit, lambda: self._use_local_time)
+        self._database_tab = DatabaseTabWidget(
+            self._conn, lambda: self._display_unit, lambda: self._use_local_time, lambda: self._palette,
+        )
         self._database_tab.open_run_requested.connect(self._on_open_run_from_database)
         tabs.addTab(self._database_tab, "Database")
 
@@ -169,6 +204,31 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_settings_tab(), "Settings")
 
         self.statusBar().showMessage("Idle")
+
+    def _build_update_banner(self) -> QWidget:
+        banner = QFrame()
+        banner.setObjectName("UpdateBanner")
+        banner.setVisible(False)
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(14, 10, 14, 10)
+
+        self._update_banner_label = QLabel()
+        self._update_banner_label.setWordWrap(True)
+        layout.addWidget(self._update_banner_label, stretch=1)
+
+        view_button = QPushButton("View Release")
+        view_button.setObjectName("SecondaryButton")
+        view_button.clicked.connect(self._on_view_release_clicked)
+        layout.addWidget(view_button)
+
+        dismiss_button = QPushButton("Dismiss")
+        dismiss_button.setObjectName("SecondaryButton")
+        dismiss_button.clicked.connect(lambda: banner.setVisible(False))
+        layout.addWidget(dismiss_button)
+
+        self._update_banner = banner
+        self._pending_release_url = ""
+        return banner
 
     def _build_chart_tab(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -213,7 +273,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setSpacing(12)
 
-        self._graph = ProfileGraphWidget()
+        self._graph = ProfileGraphWidget(palette=self._palette)
         layout.addWidget(self._graph, stretch=3)
 
         drag_hint = QLabel("Drag a curve to shift it in time (start/end alignment) · double-click a curve to reset it")
@@ -225,6 +285,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(recent_label)
 
         self._recent_list = QListWidget()
+        # No selection state, only double-click: Qt's style engine paints a
+        # selected item's text with the palette's highlighted-text color
+        # (white) regardless of any custom foreground brush, even with no
+        # QSS ::item:selected color rule -- invisible by coincidence in the
+        # dark theme (near-white text already), but white-on-white in
+        # light mode. There's nothing here that needs a "selected" state.
+        self._recent_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._recent_list.itemDoubleClicked.connect(self._on_recent_item_double_clicked)
         layout.addWidget(self._recent_list)
 
@@ -304,6 +371,10 @@ class MainWindow(QMainWindow):
         time_display_hint = QLabel("Viewing only -- doesn't change stored data.")
         time_display_hint.setObjectName("HintLabel")
         content_layout.addWidget(_card(time_display_row, time_display_hint, title="Timestamp Display"))
+
+        theme_row, self._theme_group = _theme_radio_row(self, self._theme_name)
+        self._theme_group.buttonClicked.connect(self._on_theme_changed)
+        content_layout.addWidget(_card(theme_row, title="Theme"))
 
         self._license_status_label = QLabel()
         machine_id_label = QLabel(f"Machine ID: {licensing.get_machine_id()}")
@@ -560,6 +631,19 @@ class MainWindow(QMainWindow):
         self._reload_recent_runs()
         self._database_tab.refresh()
 
+    def _on_theme_changed(self, button) -> None:
+        theme_name = str(button.property("theme_name"))
+        if theme_name == self._theme_name:
+            return
+        self._theme_name = theme_name
+        self._palette = THEMES[theme_name]
+        self._settings.setValue("theme", theme_name)
+
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_stylesheet(self._palette))
+        self._graph.set_theme(self._palette)
+
     def _on_export_png_clicked(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export Graph", "profile.png", "PNG Images (*.png)")
         if path:
@@ -605,6 +689,22 @@ class MainWindow(QMainWindow):
         self._active_plots.clear()
         self._apply_active_highlights()
 
+    def _on_update_found(self, release: ReleaseInfo) -> None:
+        self._pending_release_url = release.url
+        self._update_banner_label.setText(
+            f"Version {release.version} is available (you have {__version__})."
+        )
+        self._update_banner.setVisible(True)
+
+    def _on_view_release_clicked(self) -> None:
+        if self._pending_release_url:
+            QDesktopServices.openUrl(QUrl(self._pending_release_url))
+
     def closeEvent(self, event) -> None:
+        # A QThread destroyed while its run() is still executing (e.g. the
+        # update check mid network request) can crash Qt's teardown rather
+        # than just warn -- bounded by the same timeout the request itself
+        # uses, so this can't hang a close indefinitely.
+        self._update_worker.wait(6000)
         self._conn.close()
         super().closeEvent(event)
